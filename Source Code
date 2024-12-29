@@ -1,0 +1,261 @@
+import torch
+import torchvision
+import torch.nn as nn
+import torch.optim as optim
+import numpy as np
+import matplotlib.pyplot as plt
+from torchvision import transforms
+from torch.utils.data import DataLoader, random_split
+from torchvision.datasets import KMNIST
+from torchvision.transforms import Resize
+
+torch.manual_seed(0)
+
+transform = transforms.Compose([
+    transforms.Grayscale(num_output_channels=1), 
+    transforms.ToTensor(),
+])
+
+train_dataset = KMNIST(root='./data', train=True, download=True, transform=transform)
+print(train_dataset)
+test_dataset = KMNIST(root='./data', train=False, download=True, transform=transform)
+
+train_size = int(0.8 * len(train_dataset))
+val_size = len(train_dataset) - train_size
+train_data, val_data = random_split(train_dataset, [train_size, val_size])
+
+batch_size = 128
+train_loader = DataLoader(train_data, batch_size=batch_size, shuffle=True)
+val_loader = DataLoader(val_data, batch_size=batch_size, shuffle=False)
+test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+
+train_dataset = KMNIST(root='./data', train=True, download=True, transform=transform)
+print(train_dataset)
+test_dataset = KMNIST(root='./data', train=False, download=True, transform=transform)
+
+train_size = int(0.8 * len(train_dataset))
+val_size = len(train_dataset) - train_size
+train_data, val_data = random_split(train_dataset, [train_size, val_size])
+
+batch_size = 128
+train_loader = DataLoader(train_data, batch_size=batch_size, shuffle=True)
+val_loader = DataLoader(val_data, batch_size=batch_size, shuffle=False)
+test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+
+#1st Architecture
+class Decoder(nn.Module):
+    def __init__(self):
+        super(Decoder, self).__init__()
+        self.decoder_cnn = nn.Sequential(
+            nn.ConvTranspose2d(1, 32, kernel_size=3, stride=2, padding=1, output_padding=1),
+            nn.ReLU(True),
+            nn.ConvTranspose2d(32, 64, kernel_size=3, stride=2, padding=1, output_padding=1),
+            nn.ReLU(True),
+            nn.ConvTranspose2d(64, 1, kernel_size=3, stride=1, padding=1),
+            nn.Sigmoid()
+        )
+
+    def forward(self, x):
+        return self.decoder_cnn(x)
+
+decoder = Decoder()
+
+device = torch.device("cuda")
+decoder.to(device)
+
+loss_fn = nn.MSELoss()
+optimizer = optim.Adam(list(decoder.parameters()), lr=0.001)
+
+resize_to_7 = Resize((7, 7))
+
+def train_epoch(decoder, train_loader, loss_fn, optimizer, device):
+    decoder.train()
+    train_loss = 0
+    
+    for images, _ in train_loader:
+        images_original = images.to(device)  
+        
+        images_low_res = torch.stack([resize_to_7(image) for image in images]) 
+        images_low_res = images_low_res.to(device)  
+
+        optimizer.zero_grad()
+        
+        decoded_data = decoder(images_low_res)  
+        
+        loss = loss_fn(decoded_data, images_original)
+        loss.backward()
+        optimizer.step()
+        
+        train_loss += loss.item()
+
+    return train_loss / len(train_loader)
+
+def eval_epoch(decoder, val_loader, loss_fn, device):
+    decoder.eval()
+    val_loss = 0
+    with torch.no_grad():
+        for images, _ in val_loader:
+            images_original = images.to(device)  
+        
+            images_low_res = torch.stack([resize_to_7(image) for image in images])  
+            images_low_res = images_low_res.to(device) 
+            
+            decoded_data = decoder(images_low_res)
+            loss = loss_fn(decoded_data, images_original)
+            val_loss += loss.item()
+    return val_loss / len(val_loader)
+
+def plot_ae_outputs(decoder, test_loader, device, n=10):
+    plt.figure(figsize=(16, 4.5))
+    targets = test_dataset.targets.numpy()
+    t_idx = {i: np.where(targets == i)[0][0] for i in range(n)}
+    for i in range(n):
+        ax = plt.subplot(3, n, i + 1)
+        img = test_dataset[t_idx[i]][0].unsqueeze(0).to(device)
+        img_7x7 = resize_to_7(img.squeeze(0)).unsqueeze(0)  
+        plt.imshow(img_7x7.cpu().squeeze().numpy(), cmap='gist_gray')
+        ax.get_xaxis().set_visible(False)
+        ax.get_yaxis().set_visible(False)
+        if i == n // 2:
+            ax.set_title('7x7 Input')
+        
+        ax = plt.subplot(3, n, i + 1 + n)
+        img = test_dataset[t_idx[i]][0].unsqueeze(0).to(device)
+        decoder.eval()
+        with torch.no_grad():
+            rec_img = decoder(img)
+        plt.imshow(img.cpu().squeeze().numpy(), cmap='gist_gray')
+        ax.get_xaxis().set_visible(False)
+        ax.get_yaxis().set_visible(False)
+        if i == n // 2:
+            ax.set_title('Reconstructed images')
+        
+        ax = plt.subplot(3, n, i + 1 + 2 * n)
+        plt.imshow(rec_img.cpu().squeeze().numpy(), cmap='gist_gray')
+        ax.get_xaxis().set_visible(False)
+        ax.get_yaxis().set_visible(False)
+        if i == n // 2:
+            ax.set_title('Original images')
+    plt.show()
+
+num_epochs = 10
+train_losses = []
+val_losses = []
+for epoch in range(num_epochs):
+    train_loss = train_epoch(decoder, train_loader, loss_fn, optimizer, device)
+    val_loss = eval_epoch(decoder, val_loader, loss_fn, device)
+    print(f'Epoch {epoch + 1}/{num_epochs} | Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f}')
+    train_losses.append(train_loss)
+    val_losses.append(val_loss)
+
+plt.plot(range(1, num_epochs + 1), train_losses, label='Train Loss')
+plt.plot(range(1, num_epochs + 1), val_losses, label='Validation Loss')
+plt.xlabel('Epochs')
+plt.ylabel('Loss')
+plt.legend()
+plt.show()
+
+plot_ae_outputs(decoder, test_loader, device, n=10)
+
+#2nd Architecture | Deep Decoder
+class Decoder(nn.Module):
+    def __init__(self):
+        super(Decoder, self).__init__()
+        self.decoder_cnn = nn.Sequential(
+            nn.ConvTranspose2d(1, 64, kernel_size=3, stride=1, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(True),
+
+            nn.ConvTranspose2d(64, 64, kernel_size=3, stride=1, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(True),
+
+            nn.ConvTranspose2d(64, 32, kernel_size=3, stride=2, padding=1, output_padding=1),
+            nn.BatchNorm2d(32),
+            nn.ReLU(True),
+
+            nn.ConvTranspose2d(32, 32, kernel_size=3, stride=1, padding=1),
+            nn.BatchNorm2d(32),
+            nn.ReLU(True),
+
+            nn.ConvTranspose2d(32, 16, kernel_size=3, stride=2, padding=1, output_padding=1),
+            nn.BatchNorm2d(16),
+            nn.ReLU(True),
+
+            nn.ConvTranspose2d(16, 1, kernel_size=3, stride=1, padding=1),
+            nn.Sigmoid()
+        )
+
+    def forward(self, x):
+        return self.decoder_cnn(x)
+
+decoder = Decoder()
+device = torch.device("cuda")
+decoder.to(device)
+loss_fn = nn.MSELoss()
+optimizer = optim.Adam(list(decoder.parameters()), lr=0.001)
+num_epochs = 10
+train_losses = []
+val_losses = []
+for epoch in range(num_epochs):
+    train_loss = train_epoch(decoder, train_loader, loss_fn, optimizer, device)
+    val_loss = eval_epoch(decoder, val_loader, loss_fn, device)
+    print(f'Epoch {epoch + 1}/{num_epochs} | Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f}')
+    train_losses.append(train_loss)
+    val_losses.append(val_loss)
+
+plot_ae_outputs(decoder, test_loader, device, n=10)
+
+plt.plot(range(1, num_epochs + 1), train_losses, label='Train Loss')
+plt.plot(range(1, num_epochs + 1), val_losses, label='Validation Loss')
+plt.xlabel('Epochs')
+plt.ylabel('Loss')
+plt.legend()
+plt.show()
+
+plot_ae_outputs(decoder, test_loader, device, n=10)
+
+#3rd Architecture | Shallow Decoder
+class Decoder(nn.Module):
+    def __init__(self):
+        super(Decoder, self).__init__()
+        self.decoder_cnn = nn.Sequential(
+            nn.ConvTranspose2d(1, 16, kernel_size=3, stride=2, padding=1, output_padding=1),
+            nn.ReLU(True),
+            nn.ConvTranspose2d(16, 1, kernel_size=3, stride=2, padding=1, output_padding=1),
+            nn.Sigmoid()
+        )
+
+    def forward(self, x):
+        return self.decoder_cnn(x)
+
+decoder = Decoder()
+device = torch.device("cuda")
+decoder.to(device)
+loss_fn = nn.MSELoss()
+optimizer = optim.Adam(list(decoder.parameters()), lr=0.001)
+num_epochs = 10
+train_losses = []
+val_losses = []
+for epoch in range(num_epochs):
+    train_loss = train_epoch(decoder, train_loader, loss_fn, optimizer, device)
+    val_loss = eval_epoch(decoder, val_loader, loss_fn, device)
+    print(f'Epoch {epoch + 1}/{num_epochs} | Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f}')
+    train_losses.append(train_loss)
+    val_losses.append(val_loss)
+
+plot_ae_outputs(decoder, test_loader, device, n=10)
+
+plt.plot(range(1, num_epochs + 1), train_losses, label='Train Loss')
+plt.plot(range(1, num_epochs + 1), val_losses, label='Validation Loss')
+plt.xlabel('Epochs')
+plt.ylabel('Loss')
+plt.legend()
+plt.show()
+
+plot_ae_outputs(decoder, test_loader, device, n=10)
+
+import gc
+gc.collect()
+
+torch.cuda.empty_cache()
